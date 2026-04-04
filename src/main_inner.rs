@@ -52,14 +52,41 @@ pub async fn main_inner(config: Config) -> Result<(), Error>
         }
     };
 
+    let mut tag_batches: Vec<Option<Vec<String>>> = Vec::new();
+    if let Some(batch_file) = &config.BATCH_FILE
+    {
+        match std::fs::read_to_string(batch_file)
+        {
+            Ok(content) => match serde_json::from_str::<Vec<Vec<String>>>(&content)
+            {
+                Ok(batches) =>
+                {
+                    for batch in batches
+                    {
+                        tag_batches.push(Some(batch));
+                    }
+                    log::info!("Loaded {} tag batches from \"{}\".", tag_batches.len(), batch_file);
+                },
+                Err(e) => log::error!("Parsing BATCH_FILE \"{}\" failed with: {e}", batch_file),
+            },
+            Err(e) => log::error!("Reading BATCH_FILE \"{}\" failed with: {e}", batch_file),
+        }
+    }
+    if config.NHENTAI_TAGS.is_some()
+    {
+        tag_batches.push(config.NHENTAI_TAGS.clone());
+    }
+    if tag_batches.is_empty()
+    {
+        tag_batches.push(None); // if neither BATCH_FILE nor NHENTAI_TAGS are set, use client mode (None)
+    }
+    let is_server_mode = tag_batches.iter().any(|b| b.is_some());
 
     'program: loop // keep running for server mode
     {
         'iteration: // particular iteration of gathering id to download and downloading, client mode does only does 1 iteration, server mode unlimited
         {
             let db: sqlx::sqlite::SqlitePool; // database containing all metadata from nhentai.net api
-            let hentai_id_list: Vec<u32>; // list of hentai id to download
-
 
             log::debug!("Test connecting to nhentai.net...");
             let r;
@@ -68,7 +95,7 @@ pub async fn main_inner(config: Config) -> Result<(), Error>
                     Ok(o) => r = o,
                     Err(e) =>
                         {
-                    if config.NHENTAI_TAGS.is_none() {return Err(e.into());} // if client mode: abort completely with error
+                    if !is_server_mode {return Err(e.into());} // if client mode: abort completely with error
                             log::error!("{e}");
                             break 'iteration; // if server mode: only abort iteration, go straight to sleeping
                         }
@@ -79,7 +106,7 @@ pub async fn main_inner(config: Config) -> Result<(), Error>
                     && r.status() != wreq::StatusCode::NOT_FOUND // and except for not found and too many requests: something went wrong, abort
                     && r.status() != wreq::StatusCode::TOO_MANY_REQUESTS // not found included because of nhentai api's random 404 fuckywuckys
                 {
-                if config.NHENTAI_TAGS.is_none() {return Err(Error::WreqStatus {url: r.url().to_string(), status: r.status()});} // if client mode: abort completely with error
+                if !is_server_mode {return Err(Error::WreqStatus {url: r.url().to_string(), status: r.status()});} // if client mode: abort completely with error
                     log::error!("{}", Error::WreqStatus {url: r.url().to_string(), status: r.status()});
                     break 'iteration; // if server mode: only abort iteration, go straight to sleeping
                 }
@@ -89,18 +116,29 @@ pub async fn main_inner(config: Config) -> Result<(), Error>
                     Ok(o) => db = o,
                     Err(e) =>
                         {
-                    if config.NHENTAI_TAGS.is_none() {return Err(e.into());} // if client mode: abort completely with error
+                    if !is_server_mode {return Err(e.into());} // if client mode: abort completely with error
                             log::error!("{e}");
                             break 'iteration; // if server mode: only abort iteration, go straight to sleeping
                         }
                 }
-                hentai_id_list = get_hentai_id_list
+
+            for tags in &tag_batches
+            {
+                let mut combined_tags = tags.clone();
+                if let Some(mut t) = combined_tags {
+                    if let Some(bl) = &config.NHENTAI_BLACKLIST_TAGS {
+                        t.extend(bl.clone());
+                    }
+                    combined_tags = Some(t);
+                }
+
+                let hentai_id_list: Vec<u32> = get_hentai_id_list
                     (
                         &config.DOWNLOADME_FILEPATH,
                         &config.DONTDOWNLOADME_FILEPATH,
                         &http_client,
                         NHENTAI_TAG_SEARCH_URL,
-                        config.NHENTAI_TAGS.clone(),
+                        combined_tags,
                         &db,
                     ).await;
 
@@ -137,25 +175,31 @@ pub async fn main_inner(config: Config) -> Result<(), Error>
                     }
                     if let Err(e) = hentai.download(&http_client, config.DOWNLOAD_WORKERS.unwrap_or(5), config.CIRCUMVENT_LOAD_BALANCER.unwrap_or(false), cdn_image_servers.clone(), config.CLEANUP_TEMPORARY_FILES.unwrap_or(true)).await
                     {
-                    log::error!{"{e}"};
+                        log::error!{"{e}"};
                     }
-                }
+                } // end for (i, hentai_id)
                 log::info!("--------------------------------------------------");
 
-
-                db.close().await; // close database connection
-                log::info!("Disconnected from database at \"{}\".", DB_FILEPATH);
-
-            if config.NHENTAI_TAGS.is_none() {break 'program;} // if tag not set: client mode, exit
-
-                if let Some(s) = &config.DOWNLOADME_FILEPATH
+                if is_server_mode
                 {
-                    if let Err(e) = tokio::fs::remove_file(s).await // server mode cleanup, delete downloadme
+                    if let Some(s) = &config.DOWNLOADME_FILEPATH
                     {
-                        log::warn!("Deleting \"{}\" failed with: {e}", s);
+                        if let Err(e) = tokio::fs::remove_file(s).await // server mode cleanup per batch
+                        {
+                            if e.kind() != std::io::ErrorKind::NotFound {
+                                log::warn!("Deleting \"{}\" failed with: {e}", s);
+                            }
+                        }
                     }
                 }
-            } // free as much memory as possible
+            } // end for tags batch
+
+            db.close().await; // close database connection
+            log::info!("Disconnected from database at \"{}\".", DB_FILEPATH);
+
+            if !is_server_mode {break 'program;} // if tag not set: client mode, exit
+
+        } // free as much memory as possible
 
         log::info!("Sleeping for {}s...", f4.format(config.SLEEP_INTERVAL.unwrap_or_default() as f64));
         tokio::time::sleep(std::time::Duration::from_secs(config.SLEEP_INTERVAL.unwrap_or_default())).await; // if in server mode: sleep for interval until next check

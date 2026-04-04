@@ -9,6 +9,7 @@ pub struct Config
 {
     pub CIRCUMVENT_LOAD_BALANCER: Option<bool>, // circumvent nhentai.net's load balancer at i.nhentai.net and directly use random media server, only use if load balancer is broken
     pub CLEANUP_TEMPORARY_FILES: Option<bool>, // clean up temporary files after downloading? some prefer off for deduplication or compatibility with other tools
+    pub BATCH_FILE: Option<String>, // path to a JSON file containing an array of tag arrays for batch downloading
     pub DEBUG: Option<bool>, // debug mode?
     pub DONTDOWNLOADME_FILEPATH: Option<String>, // path to file containing hentai ID to not download, blacklist
     pub DOWNLOAD_WORKERS: Option<usize>, // number of download workers for parallel image downloads
@@ -17,6 +18,7 @@ pub struct Config
     pub LIBRARY_PATH: String, // path to download hentai to
     pub LIBRARY_SPLIT: Option<u32>, // split library into subdirectories of maximum this many hentai, None or 0 to disable
     pub NHENTAI_TAGS: Option<Vec<String>>, // keep creating downloadme.txt from these tags and keep downloading (server mode), normal tags are in format "tag:{tag}" for example "tag:ffm-threesome"; if None: don't generate downloadme.txt, download hentai once (client mode)
+    pub NHENTAI_BLACKLIST_TAGS: Option<Vec<String>>, // global tags to append to every search query to exclude them (e.g. ["-tag:guro", "-tag:scat"])
     pub SLEEP_INTERVAL: Option<u64>, // sleep interval in seconds between checking for new hentai to download (server mode)
     pub USER_AGENT: Option<String>, // bypass bot protection
 }
@@ -28,6 +30,7 @@ impl Default for Config
         Self
         {
             CIRCUMVENT_LOAD_BALANCER: None, // no entry in default config, defaults to false
+            BATCH_FILE: None, // no entry in default config, defaults to None
             CLEANUP_TEMPORARY_FILES: None,
             DEBUG: None, // no entry in default config, defaults to false
             DONTDOWNLOADME_FILEPATH: Some("./config/dontdownloadme.txt".to_owned()),
@@ -37,6 +40,7 @@ impl Default for Config
             LIBRARY_PATH: "./hentai/".to_owned(),
             LIBRARY_SPLIT: None, // no entry in default config, defaults to 0
             NHENTAI_TAGS: None,
+            NHENTAI_BLACKLIST_TAGS: None,
             SLEEP_INTERVAL: Some(50000),
             USER_AGENT: Some("Mozilla/5.0 (X11; Linux x86_64; rv:139.0) Gecko/20100101 Firefox/139.0".to_owned()),
         }
