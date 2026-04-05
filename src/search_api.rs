@@ -219,8 +219,12 @@ async fn search_by_tag_on_page(http_client: wreq::Client, nhentai_tag_search_url
     let r_text: String; // response text
 
 
+    let mut retry_count = 0;
     loop
     {
+        // Add a guaranteed minor delay between normal API paging requests
+        tokio::time::sleep(tokio::time::Duration::from_millis(600)).await;
+
         match http_client.get(format!("{nhentai_tag_search_url}?query={}&page={page_no}", nhentai_tags.join("+"))).send().await // tag search, page, do not use .query() because it converts "+" between multiple tags to "%2B"
         {
             Ok(o) => r = o,
@@ -229,8 +233,10 @@ async fn search_by_tag_on_page(http_client: wreq::Client, nhentai_tag_search_url
         log::debug!("{}", r.status());
         if r.status() == wreq::StatusCode::TOO_MANY_REQUESTS // if status is too many requests: wait and retry
         {
-            log::debug!("Downloading hentai metadata page {} from \"{}\" failed with status code {}. Waiting 2 s and retrying...", f.format(page_no), r.url().to_string(), r.status());
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            retry_count += 1;
+            let wait_time = 2u64.pow(retry_count.min(6)); // 2, 4, 8, 16, 32, max 64s
+            log::debug!("Downloading hentai metadata page {} from \"{}\" failed with status code {}. Waiting {} s and retrying...", f.format(page_no), r.url().to_string(), r.status(), wait_time);
+            tokio::time::sleep(std::time::Duration::from_secs(wait_time)).await;
             continue;
         }
         if r.status() != wreq::StatusCode::OK {return Err(SearchByTagOnPageError::WreqStatus {page_no, num_pages, url: r.url().to_string(), status: r.status()});} // if status is not ok: something went wrong

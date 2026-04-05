@@ -1,5 +1,11 @@
 # nhentai_archivist
 
+> [!NOTE]
+>
+> This is a fork of the original nhentai_archivist project, updated to use the new nHentai API endpoints. Check the new 2 options at the Further Settings section
+
+---
+
 > [!IMPORTANT]
 > If you have any questions, please **consult the readme first**.
 >
@@ -14,6 +20,8 @@ Why CBZ? CBZ is a widespread standard and basically just a ZIP file containing t
 Big thanks go out to [h3nTa1m4st3r_xx69](https://github.com/sam-k0), who helped me with using nHentai's completely undocumented API. Without him this project could not have been reactivated.
 I'm happy about anyone who finds my software useful and feedback is also always welcome. Happy downloading~
 
+**Note**: Since Mar 29, 2026 a new version of the API for NHentai was available, new endpoints and a new output structure was defined, therefore breaking the original code. This fork aims to use the new endpoints.
+
 ## Quick Start
 
 1. Execute the program once to create a default `./config/.env`.
@@ -24,6 +32,14 @@ I'm happy about anyone who finds my software useful and feedback is also always 
 1. Execute the program once to create a default `./config/.env`.\
     This means that in the directory of the executable, there should now be a directory called "config" containing a file called ".env". You might need to enable seeing hidden files in the file explorer.
 1. I recommend updating the `USER_AGENT` to your system's specific user agent. You can go to https://www.whatismybrowser.com/detect/ and copy your user agent into there.
+2. Make sure to use a compatible `clang` version when compiling locally.
+    ```bash
+    export LIBCLANG_PATH=/usr/lib/llvm19/lib
+    export CC=/usr/lib/llvm19/bin/clang
+    export CXX=/usr/lib/llvm19/bin/clang++
+
+    cargo build --release
+    ```
 
 ## Further Settings
 - `CIRCUMVENT_LOAD_BALANCER`, optional, defaults to `false`
@@ -102,6 +118,28 @@ I'm happy about anyone who finds my software useful and feedback is also always 
 > [!WARNING]
 > I advise against running multiple instances of nHentai Archivist at the same time.
 
+**New Options**
+
+- `BATCH_FILE`, optional, defaults to `None`
+
+    As the warning mention, running multiple instances of nHentai Archivist at the same time is not advised. Therefore, a new option has been added to execute sequential tasks, it has to point to a `.json` file where you define a list of `NHENTAI_TAGS`, here is an example.
+
+    ```json
+    [
+        ["parody:\"asobi-ni-iku-yo\"", "uploaded:<90d"],
+        ["parody:\"azumanga-daioh\""],
+        ["parody:bakemonogatari", "uploaded:<90d"],
+    ]
+    ```
+- `NHENTAI_BLACKLIST_TAGS`, optional, defaults to `None`
+
+    A list of tags that should be excluded from the search results. This is useful for filtering out unwanted content. Better used along the `BATCH_FILE` option. Instead of adding the same blacklist tags to each search, its added automatically for each one. Follows the same structure as `NHENTAI_TAGS`.
+
+    > Pd:
+    >
+    > Since the tags at this option will be added to each list of tags, it could also be used as a common tag for every one, I named it as blacklist because is the main reason one could use it for.
+
+
 ## Usage
 ### Download a Few Quickly
 
@@ -150,6 +188,10 @@ USER_AGENT = "your user agent here"
 ```
 
 ## Exporting Favourites
+
+> [!NOTE]
+>
+> With the new API version, you can obtain the favorites from your account, for that you would need to create your account, generate an API KEY and use the `/favorites` endpoint. This is a feature to be implemented, since I need to explore more about the new API
 
 nHentai Archivist is not connected to your nHentai account in any way. Automatically generating a `downloadme.txt` from your list of favourites is beyond the scope of this tool. However, once you compiled your favourites as a list of ID separated by line breaks, nHentai Archivist can take over. Other users were quick to automate this process, I have linked a few of the provided solutions:
 

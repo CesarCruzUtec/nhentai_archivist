@@ -49,6 +49,9 @@ pub enum HentaiDownloadError
     #[error("Downloading hentai failed multiple times. Giving up...")]
     Download(), // download failed multiple times, more specific error messages already in download logged
 
+    #[error("Downloading hentai aborted: One or more pages returned 404 Not Found.")]
+    NotFound(), // 404 not found handler
+
     #[error("Serialising hentai metadata failed with: {0}")]
     SerdeXml(#[from] serde_xml_rs::Error), // serde xml error
 

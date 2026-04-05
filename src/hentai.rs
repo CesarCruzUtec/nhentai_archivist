@@ -177,7 +177,7 @@ impl Hentai
             .set_scaling(scaler::Scaling::None)
             .set_rounding(scaler::Rounding::Magnitude(0)); // formatter
         let mut image_download_success: bool = true; // if all images were downloaded successfully, redundant initialisation here because of stupid error message
-        let mut handles: Vec<tokio::task::JoinHandle<Option<()>>>; // list of handles to download_image
+        let mut handles: Vec<tokio::task::JoinHandle<Result<(), bool>>>; // list of handles to download_image
         let worker_sem: std::sync::Arc<tokio::sync::Semaphore> = std::sync::Arc::new(tokio::sync::Semaphore::new(download_workers)); // limit number of concurrent workers otherwise api enforces rate limit
         let mut zip_writer: zip::ZipWriter<std::fs::File>; // write to zip file
 
@@ -203,8 +203,13 @@ impl Hentai
         }
 
 
-        for _ in 0..5 // try to download hentai maximum 5 times
+        for attempt in 0..5 // try to download hentai maximum 5 times
         {
+            if attempt > 0 {
+                let delay = 2u64.pow(attempt as u32);
+                log::warn!("Retrying hentai download. Waiting {} seconds before next attempt...", delay);
+                tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+            }
             image_download_success = true; // assume success
             handles = Vec::new(); // reset handles
 
@@ -216,31 +221,48 @@ impl Hentai
                 let image_url_clone: String = self.images_url.get(i).expect("Index out of bounds even though checked before that it fits.").clone();
                 let num_pages_clone: u16 = self.num_pages;
 
+                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await; // avoid burst 429 errors
+
                 let permit: tokio::sync::OwnedSemaphorePermit = worker_sem.clone().acquire_owned().await.expect("Something closed semaphore even though it should never be closed."); // acquire semaphore
                 let cdn_image_servers_clone: Vec<String> = cdn_image_servers.clone();
                 handles.push(tokio::spawn(async move
                 {
-                    let result: Option<()>;
+                    let result: Result<(), bool>; // Ok(()) for success, Err(true) for 404, Err(false) for generic error
                     match Self::download_image(&http_client_clone, &image_url_clone, circumvent_load_balancer, cdn_image_servers_clone, &image_filepath).await // download image
                     {
                         Ok(_) =>
                         {
                             log::debug!("Downloaded hentai image {} / {}.", f_clone.format((i+1) as f64), f_clone.format(num_pages_clone as f64));
-                            result = Some(()); // success
+                            result = Ok(()); // success
                         }
                         Err(e) =>
                         {
                             log::warn!("Downloading hentai image {} / {} failed with: {e}", f_clone.format((i+1) as f64), f_clone.format(num_pages_clone as f64));
-                            result = None; // failure
+                            let mut is_404 = false;
+                            if let HentaiDownloadImageError::WreqStatus { status, .. } = e {
+                                if status == wreq::StatusCode::NOT_FOUND {
+                                    is_404 = true;
+                                }
+                            }
+                            result = Err(is_404); // failure
                         }
                     }
                     drop(permit); // release semaphore
                     result // return result into handle
                 })); // search all pages in parallel
             }
+            
+            let mut got_404 = false;
             for handle in handles
             {
-                if handle.await.unwrap().is_none() {image_download_success = false;} // collect results, forward panics, if any image download failed: set flag and abandon creation of cbz later but continue downloading other images
+                if let Err(is_404) = handle.await.unwrap() {
+                    image_download_success = false;
+                    if is_404 { got_404 = true; }
+                } // collect results, forward panics, if any image download failed: set flag and abandon creation of cbz later but continue downloading other images
+            }
+            if got_404 {
+                log::error!("A 404 Not Found error occurred while downloading images. The gallery appears to be deleted or missing pages. Skipping retries.");
+                return Err(HentaiDownloadError::NotFound {});
             }
             if image_download_success {break;} // if all images were downloaded successfully: continue with cbz creation
         }
@@ -385,7 +407,8 @@ impl Hentai
             media_servers_randomised = hardcoded.iter().map(|s| s.to_string()).collect();
         }
 
-        let mut r = wreq::Response::from(http::Response::new("")); // response to store image, initialised with empty dummy response so borrow checker stops complaining about r possibly not being initialised even though it is guaranteed it is
+        let mut r = wreq::Response::from(http::Response::new("")); // response to store image, initialised with empty dummy response
+        
         for (i, media_server) in media_servers_randomised.iter().enumerate() // try all media servers
         {
             let target_url = if media_server.is_empty() // empty string means use load balancer
@@ -397,16 +420,37 @@ impl Hentai
                 image_url.replace("i.nhentai.net", media_server.as_str())
             };
             log::debug!("{}", target_url);
-            match http_client.get(&target_url).send().await
-            {
-                Ok(o) => r = o,
-                Err(e) =>
+
+            let mut success = false;
+            for retry in 0..3 {
+                match http_client.get(&target_url).send().await
                 {
-                    log::debug!("{e}");
-                    if i == media_servers_randomised.len() - 1 {return Err(HentaiDownloadImageError::WreqStatus {url: image_url.to_owned(), status: r.status()});} // if not ok and last media server: something went wrong, give up
-                    else {continue;} // if not ok: try next media server
-                },
+                    Ok(o) => {
+                        r = o;
+                        if r.status() == wreq::StatusCode::TOO_MANY_REQUESTS {
+                            let delay = 2u64.pow(retry + 1);
+                            log::warn!("429 Rate Limit for {}, retrying in {} seconds...", target_url, delay);
+                            tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+                            continue;
+                        }
+                        success = true;
+                        break;
+                    },
+                    Err(e) =>
+                    {
+                        log::debug!("{e}");
+                        let delay = 2u64.pow(retry + 1);
+                        tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+                        continue;
+                    },
+                }
             }
+
+            if !success {
+                if i == media_servers_randomised.len() - 1 {return Err(HentaiDownloadImageError::WreqStatus {url: image_url.to_owned(), status: r.status()});} // if not ok and last media server: something went wrong, give up
+                else {continue;} // if not ok: try next media server
+            }
+
             log::debug!("{}", r.status());
             if r.status() == wreq::StatusCode::OK {break;} // if ok: stop trying out media servers
             else if i == media_servers_randomised.len() - 1 {return Err(HentaiDownloadImageError::WreqStatus {url: image_url.to_owned(), status: r.status()});} // if not ok and last media server: something went wrong, give up
